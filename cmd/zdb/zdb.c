@@ -126,7 +126,7 @@ usage(void)
 	    "       %s -R [-A] [-e [-p path...]] poolname "
 	    "vdev:offset:size[:flags]\n"
 	    "       %s -S [-PA] [-e [-p path...]] [-U config] poolname\n"
-	    "       %s -l [-uA] device\n"
+	    "       %s -l [-uAa] [-o offset] device\n"
 	    "       %s -C [-A] [-U config]\n\n",
 	    cmdname, cmdname, cmdname, cmdname, cmdname, cmdname, cmdname);
 
@@ -178,9 +178,14 @@ usage(void)
 	(void) fprintf(stderr, "        -I <number of inflight I/Os> -- "
 	    "specify the maximum number of "
 	    "checksumming I/Os [default is 200]\n");
+	(void) fprintf(stderr, "    Below options are intended for use "
+	    "with -l:\n");
+	(void) fprintf(stderr, "        -a seek until a valid label is "
+	    "found\n");
+	(void) fprintf(stderr, "        -o seek for zpool label from offset\n");
+	(void) fprintf(stderr, "Default is to dump everything non-verbosely\n");
 	(void) fprintf(stderr, "Specify an option more than once (e.g. -bb) "
 	    "to make only that option verbose\n");
-	(void) fprintf(stderr, "Default is to dump everything non-verbosely\n");
 	exit(1);
 }
 
@@ -2206,7 +2211,7 @@ dump_label_uberblocks(vdev_label_t *lbl, uint64_t ashift)
 }
 
 static void
-dump_label(const char *dev)
+dump_label(const char *dev, size_t start_offset, const int find_labels)
 {
 	int fd;
 	vdev_label_t label;
@@ -2239,7 +2244,53 @@ dump_label(const char *dev)
 		exit(1);
 	}
 
-	psize = statbuf.st_size;
+	// in find_labels mode, we iteratively seek until we find a valid
+	// label, then print label contents from there.
+	size_t offset = start_offset;
+	if (find_labels) {
+		int found_label = 0;
+
+		(void) printf("Seeking from %llu for a valid label...\n",
+		    (unsigned long long) offset);
+		while (offset < statbuf.st_size) {
+			(void) printf("\rOffset: %llu",
+			    (unsigned long long) offset);
+
+			psize = statbuf.st_size - offset;
+			psize = P2ALIGN(psize, (uint64_t)sizeof (vdev_label_t));
+
+			if (pread64(fd, &label, sizeof (label),
+			    vdev_label_offset(psize, 0, offset)) ==
+			    sizeof (label)) {
+				// read succeeded. try unpack:
+				nvlist_t *config = NULL;
+				if (nvlist_unpack(buf, buflen, &config, 0) ==
+				    0) {
+					// unpack succeeded, we have found a
+					// label and probably a partition.
+					nvlist_free(config);
+					found_label = 1;
+					break;
+				}
+			}
+			offset++;
+		}
+
+		if (!found_label) {
+			// nothing found. stop here.
+			(void) printf("\nFinished seeking with result: %s",
+			    strerror(errno));
+			(void) printf("\nNo valid partition labels found.\n");
+			free(path);
+			(void) close(fd);
+			return;
+		} else {
+			(void) printf("\r");
+		}
+	}
+
+	// regular label print code for what we found.
+	psize = statbuf.st_size - offset;
 	psize = P2ALIGN(psize, (uint64_t)sizeof (vdev_label_t));
 
 	for (l = 0; l < VDEV_LABELS; l++) {
@@ -2250,7 +2301,7 @@ dump_label(const char *dev)
 		(void) printf("--------------------------------------------\n");
 
 		if (pread64(fd, &label, sizeof (label),
-		    vdev_label_offset(psize, l, 0)) != sizeof (label)) {
+		    vdev_label_offset(psize, l, offset)) != sizeof (label)) {
 			(void) printf("failed to read label %d\n", l);
 			continue;
 		}
@@ -2269,8 +2320,14 @@ dump_label(const char *dev)
 				ashift = SPA_MINBLOCKSHIFT;
 			nvlist_free(config);
 		}
+
 		if (dump_opt['u'])
 			dump_label_uberblocks(&label, ashift);
+	}
+
+	if (find_labels) {
+		(void) printf("\nZFS labels found from offset %lu\n",
+		    (unsigned long)offset);
 	}
 
 	free(path);
@@ -3631,6 +3688,8 @@ main(int argc, char **argv)
 	int rewind = ZPOOL_NEVER_REWIND;
 	char *spa_config_path_env;
 	boolean_t target_is_spa = B_TRUE;
+	size_t label_offset = 0;
+	int find_labels = 0;
 
 	(void) setrlimit(RLIMIT_NOFILE, &rl);
 	(void) enable_extended_FILE_stdio(-1, -1);
@@ -3647,13 +3706,16 @@ main(int argc, char **argv)
 		spa_config_path = spa_config_path_env;
 
 	while ((c = getopt(argc, argv,
-	    "bcdhilmMI:suCDRSAFLXx:evp:t:U:PV")) != -1) {
+	    "abcdhilmMI:o:suCDRSAFLXx:evp:t:U:PV")) != -1) {
 		switch (c) {
 		case 'b':
 		case 'c':
 		case 'd':
 		case 'h':
 		case 'i':
+			dump_opt[c]++;
+			dump_all = 0;
+			break;
 		case 'l':
 		case 'm':
 		case 's':
@@ -3717,6 +3779,11 @@ main(int argc, char **argv)
 			break;
 		case 'v':
 			verbose++;
+		case 'a':
+			find_labels = 1;
+			break;
+		case 'o':
+			label_offset = (size_t)strtoull(optarg, NULL, 0);
 			break;
 		default:
 			usage();
@@ -3777,7 +3844,7 @@ main(int argc, char **argv)
 	}
 
 	if (dump_opt['l']) {
-		dump_label(argv[0]);
+		dump_label(argv[0], label_offset, find_labels);
 		return (0);
 	}
 
