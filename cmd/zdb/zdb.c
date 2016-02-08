@@ -2249,6 +2249,10 @@ dump_label(const char *dev, size_t start_offset, const int find_labels)
 	// in find_labels mode, we iteratively seek until we find a valid
 	// label, then print label contents from there.
 	size_t offset = start_offset;
+	if (offset % 4096 != 0) {
+		offset -= (offset % 4096);
+		offset += 4096;
+	}
 	if (find_labels) {
 		int found_label = 0;
 
@@ -2286,7 +2290,7 @@ dump_label(const char *dev, size_t start_offset, const int find_labels)
 					}
 				}
 			}
-			offset++;
+			offset += 4096;
 		}
 
 		if (!found_label) {
