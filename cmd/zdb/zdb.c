@@ -2266,11 +2266,21 @@ dump_label(const char *dev, size_t start_offset, const int find_labels)
 				nvlist_t *config = NULL;
 				if (nvlist_unpack(buf, buflen, &config, 0) ==
 				    0) {
-					// unpack succeeded, we have found a
-					// label and probably a partition.
-					nvlist_free(config);
-					found_label = 1;
-					break;
+					// unpack succeeded
+					nvpair_t        *elem = NULL;
+					elem = nvlist_next_nvpair(config, elem);
+					if (elem != NULL) {
+						 // could be a label, and
+						 // possibly a partition here
+						nvlist_free(config);
+						found_label = 1;
+						break;
+					} else {
+						// false positive
+						printf("\nfalse positive at "
+						    "offset %lu\n",
+						    (unsigned long)offset);
+					}
 				}
 			}
 			offset++;
