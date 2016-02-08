@@ -2221,6 +2221,8 @@ dump_label(const char *dev, size_t start_offset, const int find_labels)
 	uint64_t psize, ashift;
 	int len = strlen(dev) + 1;
 	int l;
+	nvpair_t *elem = NULL;
+	int elem_count = 0;
 
 	if (strncmp(dev, "/dev/dsk/", 9) == 0) {
 		len++;
@@ -2267,19 +2269,20 @@ dump_label(const char *dev, size_t start_offset, const int find_labels)
 				if (nvlist_unpack(buf, buflen, &config, 0) ==
 				    0) {
 					// unpack succeeded
-					nvpair_t        *elem = NULL;
-					elem = nvlist_next_nvpair(config, elem);
-					if (elem != NULL) {
-						 // could be a label, and
-						 // possibly a partition here
+					while ((elem = nvlist_next_nvpair(
+					    config, elem)) != NULL)
+						elem_count++;
+					if (elem_count >= 13) {
+						// could be a label, and
+						// possibly a partition here
 						nvlist_free(config);
 						found_label = 1;
 						break;
 					} else {
 						// false positive
-						printf("\nfalse positive at "
-						    "offset %lu\n",
-						    (unsigned long)offset);
+						printf("\nFalse positive found"
+						    " with %d elements\n",
+						    elem_count);
 					}
 				}
 			}
